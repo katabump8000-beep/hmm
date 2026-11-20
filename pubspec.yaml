@@ -1,7 +1,7 @@
 name: jesi_downloader
-description: JESI Downloader - smart link inspector and direct media downloader.
+description: JESI Downloader
 publish_to: "none"
-version: 1.0.0+1
+version: 1.1.0+2
 environment:
   sdk: ">=3.4.0 <4.0.0"
 dependencies:
@@ -11,19 +11,14 @@ dependencies:
   dio: ^5.7.0
   shared_preferences: ^2.3.3
   flutter_secure_storage: ^9.2.2
-  permission_handler: ^11.3.1
-  gal: ^2.3.0
   path_provider: ^2.1.5
   flutter_local_notifications: ^18.0.1
   connectivity_plus: ^6.1.0
-  url_launcher: ^6.3.1
-  mime: ^2.0.0
-  crypto: ^3.0.6
+  just_audio: ^0.9.46
+  video_player: ^2.9.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
 flutter:
   uses-material-design: true
-  assets:
-    - assets/icon.svg
