@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -54,7 +54,12 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
  void toast(String s)=>ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(s)));
  String normalize(String raw){final u=Uri.tryParse(raw.trim().contains('://')?raw.trim():'https://${raw.trim()}');if(u==null||!u.hasAuthority||!['http','https'].contains(u.scheme))throw const FormatException('الرابط غير صالح');return u.toString();}
  Future<void> inspect() async {
-  if(url.text.trim().isEmpty)return; setState(()=>{checking=true,err='',link=null,status='جارٍ فحص الرابط…'});
+  if(url.text.trim().isEmpty)return; setState(() {
+    checking = true;
+    err = '';
+    link = null;
+    status = 'جارٍ فحص الرابط…';
+   });
   try{
    final u=normalize(url.text); Response r;
    try{r=await dio.head(u,options:Options(validateStatus:(s)=>s!=null&&s<500));}
@@ -75,24 +80,55 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
  Future<Directory> folder()async{final d=Directory('${(await getApplicationDocumentsDirectory()).path}/JESI_Downloads');await d.create(recursive:true);return d;}
  Future<void> download() async {
   final x=link;if(x==null)return;if(x.kind==Kind.page||x.kind==Kind.other){toast('هذا رابط صفحة وليس ملفاً مباشراً.');return;}
-  setState(()=>{downloading=true,pct=0,got=0,total=x.length,speed='حساب السرعة…',err='',status='جارٍ التنزيل…'});
+  setState(() {
+    downloading = true;
+    pct = 0;
+    got = 0;
+    total = x.length;
+    speed = 'حساب السرعة…';
+    err = '';
+    status = 'جارٍ التنزيل…';
+   });
   token=CancelToken();final sw=Stopwatch()..start();int old=0,oldMs=0;
   try{
    final d=await folder();var name=clean(x.name);if(!name.contains('.'))name+=x.kind==Kind.video?'.mp4':x.kind==Kind.image?'.jpg':'.mp3';
    var path='${d.path}/$name';if(await File(path).exists())path='${d.path}/${DateTime.now().millisecondsSinceEpoch}_$name';
    await dio.download(x.url,path,cancelToken:token,options:Options(headers:{'Accept-Encoding':'identity'},receiveTimeout:const Duration(minutes:20)),onReceiveProgress:(r,t){
     if(!mounted)return;final ms=sw.elapsedMilliseconds;if(ms-oldMs>400){final kb=max(0,r-old)*1000/max(1,ms-oldMs)/1024;speed=kb>1024?'${(kb/1024).toStringAsFixed(2)} MB/s':'${kb.toStringAsFixed(0)} KB/s';old=r;oldMs=ms;}
-    setState(()=>{got=r,if(t>0)total=t,pct=total>0?(r/total).clamp(0,1):0,status='جارٍ تنزيل $name'});
+    setState(() {
+      got = r;
+      if (t > 0) total = t;
+      pct = total > 0 ? (r / total).clamp(0, 1) : 0;
+      status = 'جارٍ تنزيل $name';
+     });
     Notice.progress((pct*100).round(),'${sizeText(got)} / ${sizeText(total)}');
    });
    if(await File(path).length()==0)throw Exception('الملف فارغ');
    final p=await SharedPreferences.getInstance();count=(p.getInt('done')??0)+1;await p.setInt('done',count);
-   setState(()=>{downloading=false,pct=1,status='اكتمل التنزيل',speed='مكتمل'});await Notice.done('اكتمل التنزيل',name);toast('حُفظ في مكتبة JESI');
-  }catch(e){setState(()=>{downloading=false,status='فشل التنزيل',err=e is DioException?errText(e):e.toString(),speed='—'});await Notice.done('فشل التنزيل',err);}
+   if (!mounted) return;
+   setState(() {
+    downloading = false;
+    pct = 1;
+    status = 'اكتمل التنزيل';
+    speed = 'مكتمل';
+   });
+   await Notice.done('اكتمل التنزيل', name);
+   if (!mounted) return;
+   toast('حُفظ في مكتبة JESI');
+  } catch (e) {
+   if (!mounted) return;
+   setState(() {
+    downloading = false;
+    status = 'فشل التنزيل';
+    err = e is DioException ? errText(e) : e.toString();
+    speed = '—';
+   });
+   await Notice.done('فشل التنزيل', err);
+  }
  }
  Future<void> paste()async{final s=(await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim()??'';if(s.isEmpty){toast('الحافظة فارغة');return;}url.text=s;await inspect();}
  @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:const Text('⬇ JESI',style:TextStyle(fontWeight:FontWeight.w900,letterSpacing:2)),actions:[IconButton(onPressed:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>Assistant(secure:secure))),icon:const Icon(Icons.auto_awesome)),IconButton(onPressed:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>Settings(secure:secure))),icon:const Icon(Icons.tune))]),body:SafeArea(child:ListView(padding:const EdgeInsets.all(18),children:[
-  Center(child:AnimatedBuilder(animation:anim,builder:(_,__)=>Container(width:145,height:145,decoration:BoxDecoration(shape:BoxShape.circle,border:Border.all(color:neon.withOpacity(.5+anim.value*.4),width:2),boxShadow:[BoxShadow(color:neon.withOpacity(.18),blurRadius:30,spreadRadius:8)]),child:const Icon(Icons.download,size:72,color:neon)))),
+  Center(child:AnimatedBuilder(animation:anim,builder:(_,__)=>Container(width:145,height:145,decoration:BoxDecoration(shape:BoxShape.circle,border:Border.all(color:neon.withValues(alpha: .5+anim.value*.4),width:2),boxShadow:[BoxShadow(color:neon.withValues(alpha: .18),blurRadius:30,spreadRadius:8)]),child:const Icon(Icons.download,size:72,color:neon)))),
   const SizedBox(height:20),const Center(child:Text('حمّل بذكاء مع الجيسي',style:TextStyle(fontSize:22,fontWeight:FontWeight.bold))),
   const SizedBox(height:20),TextField(controller:url,keyboardType:TextInputType.url,decoration:InputDecoration(hintText:'رابط ملف فيديو أو صورة أو صوت',prefixIcon:const Icon(Icons.link,color:neon),suffixIcon:IconButton(onPressed:paste,icon:const Icon(Icons.content_paste,color:neon)))),
   const SizedBox(height:12),FilledButton.icon(onPressed:checking?null:inspect,icon:checking?const SizedBox(width:18,height:18,child:CircularProgressIndicator(strokeWidth:2)):const Icon(Icons.search),label:const Text('افحص الرابط')),
@@ -130,9 +166,17 @@ class _LibraryState extends State<Library>{
  Future<void> load()async{final d=Directory('${(await getApplicationDocumentsDirectory()).path}/JESI_Downloads');if(await d.exists())files=d.listSync().whereType<File>().toList()..sort((a,b)=>b.lastModifiedSync().compareTo(a.lastModifiedSync()));if(mounted)setState((){});}
  Kind kind(File f)=>detect('',f.path);
  List<File> get shown=>files.where((f){final k=kind(f);return tab==0||(tab==1&&k==Kind.video)||(tab==2&&k==Kind.audio)||(tab==3&&k==Kind.image);}).toList();
- Future<void> play(File f)async{try{if(playing==f.path&&player.playing){await player.pause();}else{await player.setFilePath(f.path);playing=f.path;await player.play();}setState((){});}catch(e){ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('تعذر تشغيل الصوت: $e')));}}
+ Future<void> play(File f)async{try{if(playing==f.path&&player.playing){await player.pause();}else{await player.setFilePath(f.path);playing=f.path;await player.play();}
+   if (!mounted) return;
+   setState(() {});
+  } catch (e) {
+   if (!mounted) return;
+   ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('تعذر تشغيل الصوت: $e')),
+   );
+  }}
  @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:const Text('التنزيلات')),body:Column(children:[
-  Padding(padding:const EdgeInsets.all(10),child:Wrap(spacing:6,children:List.generate(4,(i)=>ChoiceChip(label:Text(['الكل','الفيديوهات','الأغاني','الصور'][i]),selected:tab==i,onSelected:(_)=>setState(()=>tab=i),selectedColor:neon.withOpacity(.2))))),
+  Padding(padding:const EdgeInsets.all(10),child:Wrap(spacing:6,children:List.generate(4,(i)=>ChoiceChip(label:Text(['الكل','الفيديوهات','الأغاني','الصور'][i]),selected:tab==i,onSelected:(_)=>setState(()=>tab=i),selectedColor:neon.withValues(alpha: .2))))),
   Expanded(child:shown.isEmpty?const Center(child:Text('لا توجد ملفات محفوظة في هذا القسم.')):RefreshIndicator(onRefresh:load,child:ListView.builder(itemCount:shown.length,itemBuilder:(_,i){
    final f=shown[i],k=kind(shown[i]);final icon=k==Kind.audio?Icons.music_note:k==Kind.video?Icons.movie:Icons.image;
    return Card(color:const Color(0xFF101820),child:ListTile(leading:k==Kind.image?ClipRRect(borderRadius:BorderRadius.circular(8),child:Image.file(f,width:52,height:52,fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Icon(Icons.image,color:neon))):CircleAvatar(child:Icon(icon,color:neon)),
@@ -155,7 +199,10 @@ class _AssistantState extends State<Assistant> {
  String answer='';bool busy=false;
  Future<void> ask() async {
   if(url.text.trim().isEmpty||question.text.trim().isEmpty)return;
-  setState(()=>{busy=true,answer=''});
+  setState(() {
+    busy = true;
+    answer = '';
+   });
   try{
    final p=await SharedPreferences.getInstance();
    final key=(await widget.secure.read(key:'api_key')??'').trim();
