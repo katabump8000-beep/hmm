@@ -367,7 +367,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ])),
       const SizedBox(height: 22),
       const Center(child: Text('JESI DOWNLOADER • NO ADS', style: TextStyle(color: Colors.white30, fontSize: 10, letterSpacing: 1.5))),
-    ]))),
+    ])),
   );
 
   Widget _panel({required Widget child}) => Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF101820), borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.white.withOpacity(.07))), child: child);
