@@ -7,450 +7,216 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:gal/gal.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:video_player/video_player.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const neon = Color(0xFF20E6C5);
-const bg = Color(0xFF070B10);
-
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Notice.init();
-  runApp(const JesiApp());
-}
+const neon = Color(0xFF20E6C5), bg = Color(0xFF070B10);
+Future<void> main() async { WidgetsFlutterBinding.ensureInitialized(); await Notice.init(); runApp(const JesiApp()); }
 
 class Notice {
-  static final plugin = FlutterLocalNotificationsPlugin();
+  static final p = FlutterLocalNotificationsPlugin();
   static Future<void> init() async {
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    await plugin.initialize(const InitializationSettings(android: android));
-    await plugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
+    await p.initialize(const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')));
+    await p.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
   }
-
-  static Future<void> show(String title, String body, {int id = 1}) async {
-    const details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        'jesi_downloads', 'JESI downloads',
-        channelDescription: 'Download progress and status',
-        importance: Importance.low,
-        priority: Priority.low,
-        ongoing: true,
-        showProgress: true,
-        maxProgress: 100,
-        progress: 0,
-      ),
-    );
-    await plugin.show(id, title, body, details);
-  }
-
-  static Future<void> done(String title, String body, {int id = 1}) async {
-    const details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        'jesi_downloads', 'JESI downloads',
-        channelDescription: 'Download completion',
-        importance: Importance.defaultImportance,
-        priority: Priority.defaultPriority,
-        ongoing: false,
-      ),
-    );
-    await plugin.show(id, title, body, details);
-  }
+  static Future<void> progress(int n, String s) async => p.show(7,'JESI • تنزيل',s,NotificationDetails(android:AndroidNotificationDetails('jesi_downloads','JESI downloads',importance:Importance.low,priority:Priority.low,ongoing:true,onlyAlertOnce:true,showProgress:true,maxProgress:100,progress:n.clamp(0,100))));
+  static Future<void> done(String t,String s) async => p.show(7,t,s,const NotificationDetails(android:AndroidNotificationDetails('jesi_downloads','JESI downloads')));
 }
 
 class JesiApp extends StatelessWidget {
-  const JesiApp({super.key});
-  @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    title: 'JESI Downloader',
-    theme: ThemeData(
-      brightness: Brightness.dark,
-      scaffoldBackgroundColor: bg,
-      colorScheme: const ColorScheme.dark(primary: neon, secondary: Color(0xFF6A7CFF)),
-      useMaterial3: true,
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true, fillColor: const Color(0xFF111923),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Colors.white.withOpacity(.07))),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: neon)),
-      ),
-    ),
-    home: const HomePage(),
-  );
+ const JesiApp({super.key});
+ @override Widget build(BuildContext c)=>MaterialApp(debugShowCheckedModeBanner:false,title:'JESI Downloader',theme:ThemeData(brightness:Brightness.dark,scaffoldBackgroundColor:bg,colorScheme:const ColorScheme.dark(primary:neon,secondary:Color(0xFF687BFF)),useMaterial3:true),home:const Home());
+}
+enum Kind { video,image,audio,page,other }
+Kind detect(String mime,String url) {
+ final m=mime.toLowerCase(), p=Uri.tryParse(url)?.path.toLowerCase()??'';
+ if(m.startsWith('video/')||['.mp4','.mov','.m4v','.webm','.mkv'].any(p.endsWith)) return Kind.video;
+ if(m.startsWith('image/')||['.jpg','.jpeg','.png','.webp','.gif'].any(p.endsWith)) return Kind.image;
+ if(m.startsWith('audio/')||['.mp3','.m4a','.aac','.wav','.ogg','.flac'].any(p.endsWith)) return Kind.audio;
+ if(m.contains('html')||m.isEmpty) return Kind.page;
+ return Kind.other;
+}
+String sizeText(int n)=>'${(n/1048576).toStringAsFixed(2)} MB';
+String clean(String s)=>s.replaceAll(RegExp(r'[\\/:*?"<>|]'),'_');
+
+class Home extends StatefulWidget { const Home({super.key}); @override State<Home> createState()=>_HomeState(); }
+class _HomeState extends State<Home> with TickerProviderStateMixin {
+ final url=TextEditingController(), secure=const FlutterSecureStorage();
+ final dio=Dio(BaseOptions(connectTimeout:const Duration(seconds:25),receiveTimeout:const Duration(minutes:20),followRedirects:true,maxRedirects:10));
+ Link? link; bool checking=false,downloading=false,online=true; double pct=0;
+ int got=0,total=0,count=0; String status='ألصق رابط ملف مباشر للفحص',speed='—',err='';
+ CancelToken? token; StreamSubscription<List<ConnectivityResult>>? net;
+ late AnimationController anim;
+ @override void initState(){super.initState();anim=AnimationController(vsync:this,duration:const Duration(seconds:2))..repeat(reverse:true);net=Connectivity().onConnectivityChanged.listen((v){if(mounted)setState(()=>online=!v.contains(ConnectivityResult.none));}); SharedPreferences.getInstance().then((p){if(mounted)setState(()=>count=p.getInt('done')??0);});}
+ @override void dispose(){url.dispose();anim.dispose();net?.cancel();token?.cancel();super.dispose();}
+ void toast(String s)=>ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(s)));
+ String normalize(String raw){final u=Uri.tryParse(raw.trim().contains('://')?raw.trim():'https://${raw.trim()}');if(u==null||!u.hasAuthority||!['http','https'].contains(u.scheme))throw const FormatException('الرابط غير صالح');return u.toString();}
+ Future<void> inspect() async {
+  if(url.text.trim().isEmpty)return; setState(()=>{checking=true,err='',link=null,status='جارٍ فحص الرابط…'});
+  try{
+   final u=normalize(url.text); Response r;
+   try{r=await dio.head(u,options:Options(validateStatus:(s)=>s!=null&&s<500));}
+   catch(_){r=await dio.get(u,options:Options(responseType:ResponseType.stream,headers:{'Range':'bytes=0-0'},validateStatus:(s)=>s!=null&&s<500));}
+   if(r.statusCode==405||r.statusCode==501)r=await dio.get(u,options:Options(responseType:ResponseType.stream,headers:{'Range':'bytes=0-0'},validateStatus:(s)=>s!=null&&s<500));
+   if((r.statusCode??500)>=400)throw Exception('المصدر رفض الطلب: HTTP ${r.statusCode}');
+   final mime=r.headers.value('content-type')?.split(';').first??'';
+   final len=int.tryParse(r.headers.value('content-length')??r.headers.value('content-range')?.split('/').last??'')??0;
+   final k=detect(mime,u), parts=Uri.parse(u).pathSegments;
+   final cd=r.headers.value('content-disposition')??'';
+   final fn=RegExp(r'filename="?([^";]+)').firstMatch(cd)?.group(1)??(parts.isEmpty?'download':parts.last);
+   link=Link(u,mime,Uri.decodeComponent(fn),len,k);
+   status=k==Kind.page?'وصلنا لصفحة ويب، وليس لملف وسائط مباشر.':'تم العثور على ملف ${k.name} مباشر.';
+  }catch(e){err=errText(e);status='تعذر فحص الرابط';}
+  finally{if(mounted)setState(()=>checking=false);}
+ }
+ String errText(Object e){if(e is DioException){final c=e.response?.statusCode;if(c==401||c==403)return 'رفض الموقع الوصول (HTTP $c). قد يحتاج الرابط لصلاحية.';if(c==404)return 'الملف غير موجود (404).';if(e.type==DioExceptionType.connectionTimeout)return 'انتهت مهلة الاتصال.';return e.message??'خطأ اتصال';}return e.toString();}
+ Future<Directory> folder()async{final d=Directory('${(await getApplicationDocumentsDirectory()).path}/JESI_Downloads');await d.create(recursive:true);return d;}
+ Future<void> download() async {
+  final x=link;if(x==null)return;if(x.kind==Kind.page||x.kind==Kind.other){toast('هذا رابط صفحة وليس ملفاً مباشراً.');return;}
+  setState(()=>{downloading=true,pct=0,got=0,total=x.length,speed='حساب السرعة…',err='',status='جارٍ التنزيل…'});
+  token=CancelToken();final sw=Stopwatch()..start();int old=0,oldMs=0;
+  try{
+   final d=await folder();var name=clean(x.name);if(!name.contains('.'))name+=x.kind==Kind.video?'.mp4':x.kind==Kind.image?'.jpg':'.mp3';
+   var path='${d.path}/$name';if(await File(path).exists())path='${d.path}/${DateTime.now().millisecondsSinceEpoch}_$name';
+   await dio.download(x.url,path,cancelToken:token,options:Options(headers:{'Accept-Encoding':'identity'},receiveTimeout:const Duration(minutes:20)),onReceiveProgress:(r,t){
+    if(!mounted)return;final ms=sw.elapsedMilliseconds;if(ms-oldMs>400){final kb=max(0,r-old)*1000/max(1,ms-oldMs)/1024;speed=kb>1024?'${(kb/1024).toStringAsFixed(2)} MB/s':'${kb.toStringAsFixed(0)} KB/s';old=r;oldMs=ms;}
+    setState(()=>{got=r,if(t>0)total=t,pct=total>0?(r/total).clamp(0,1):0,status='جارٍ تنزيل $name'});
+    Notice.progress((pct*100).round(),'${sizeText(got)} / ${sizeText(total)}');
+   });
+   if(await File(path).length()==0)throw Exception('الملف فارغ');
+   final p=await SharedPreferences.getInstance();count=(p.getInt('done')??0)+1;await p.setInt('done',count);
+   setState(()=>{downloading=false,pct=1,status='اكتمل التنزيل',speed='مكتمل'});await Notice.done('اكتمل التنزيل',name);toast('حُفظ في مكتبة JESI');
+  }catch(e){setState(()=>{downloading=false,status='فشل التنزيل',err=e is DioException?errText(e):e.toString(),speed='—'});await Notice.done('فشل التنزيل',err);}
+ }
+ Future<void> paste()async{final s=(await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim()??'';if(s.isEmpty){toast('الحافظة فارغة');return;}url.text=s;await inspect();}
+ @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:const Text('⬇ JESI',style:TextStyle(fontWeight:FontWeight.w900,letterSpacing:2)),actions:[IconButton(onPressed:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>Assistant(secure:secure))),icon:const Icon(Icons.auto_awesome)),IconButton(onPressed:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>Settings(secure:secure))),icon:const Icon(Icons.tune))]),body:SafeArea(child:ListView(padding:const EdgeInsets.all(18),children:[
+  Center(child:AnimatedBuilder(animation:anim,builder:(_,__)=>Container(width:145,height:145,decoration:BoxDecoration(shape:BoxShape.circle,border:Border.all(color:neon.withOpacity(.5+anim.value*.4),width:2),boxShadow:[BoxShadow(color:neon.withOpacity(.18),blurRadius:30,spreadRadius:8)]),child:const Icon(Icons.download,size:72,color:neon)))),
+  const SizedBox(height:20),const Center(child:Text('حمّل بذكاء مع الجيسي',style:TextStyle(fontSize:22,fontWeight:FontWeight.bold))),
+  const SizedBox(height:20),TextField(controller:url,keyboardType:TextInputType.url,decoration:InputDecoration(hintText:'رابط ملف فيديو أو صورة أو صوت',prefixIcon:const Icon(Icons.link,color:neon),suffixIcon:IconButton(onPressed:paste,icon:const Icon(Icons.content_paste,color:neon)))),
+  const SizedBox(height:12),FilledButton.icon(onPressed:checking?null:inspect,icon:checking?const SizedBox(width:18,height:18,child:CircularProgressIndicator(strokeWidth:2)):const Icon(Icons.search),label:const Text('افحص الرابط')),
+  const SizedBox(height:14),_panel(Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+   Row(children:[const Icon(Icons.radar,color:neon),const SizedBox(width:8),const Text('نتيجة الفحص',style:TextStyle(fontWeight:FontWeight.bold)),const Spacer(),Text(online?'متصل':'غير متصل',style:TextStyle(color:online?neon:Colors.orange))]),
+   const SizedBox(height:10),Text(status),
+   if(link!=null)...[const Divider(),_line('النوع',link!.kind.name),_line('MIME',link!.mime),_line('الاسم',link!.name),_line('الحجم',sizeText(link!.length))],
+   if(err.isNotEmpty)Text(err,style:const TextStyle(color:Colors.orangeAccent))
+  ])),
+  if(link!=null&&[Kind.video,Kind.audio,Kind.image].contains(link!.kind))...[
+   const SizedBox(height:12),_panel(Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+    const Text('خيارات التنزيل',style:TextStyle(fontWeight:FontWeight.bold)),
+    Text(link!.kind==Kind.video?'الدقة المتاحة: الملف الأصلي الذي يقدمه الرابط. لا يمكن إنشاء 144p أو 1080p إن لم يوفرها المصدر.':link!.kind==Kind.audio?'الصيغة والجودة الأصلية التي يوفرها الرابط.':'جودة الصورة الأصلية.',style:const TextStyle(color:Colors.white60)),
+    const SizedBox(height:10),SizedBox(width:double.infinity,child:FilledButton.icon(onPressed:downloading?null:download,icon:const Icon(Icons.download),label:const Text('تنزيل الملف')))
+   ]))
+  ],
+  if(downloading||got>0)...[const SizedBox(height:12),_panel(Column(children:[
+   Row(children:[const Text('مؤشر التنزيل'),const Spacer(),Text('${(pct*100).round()}%')]),const SizedBox(height:8),LinearProgressIndicator(value:total>0?pct:null,color:neon,minHeight:7),
+   _line('السرعة',speed),_line('تم تنزيل',sizeText(got)),_line('الحجم الإجمالي',sizeText(total)),_line('عدد التنزيلات المكتملة','$count'),
+   if(downloading)TextButton(onPressed:()=>token?.cancel('إيقاف من المستخدم'),child:const Text('إيقاف التنزيل'))
+  ]))],
+  const SizedBox(height:14),_panel(Row(children:[const Icon(Icons.folder_copy,color:neon,size:28),const SizedBox(width:12),const Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('التنزيلات',style:TextStyle(fontWeight:FontWeight.bold)),Text('فيديوهات • أغاني • صور',style:TextStyle(color:Colors.white54,fontSize:12))])),TextButton(onPressed:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>const Library())),child:const Text('فتح'))])),
+  const SizedBox(height:20),const Center(child:Text('JESI DOWNLOADER • NO ADS',style:TextStyle(color:Colors.white30,fontSize:10)))
+ ])));
+ Widget _panel(Widget w)=>Container(padding:const EdgeInsets.all(16),decoration:BoxDecoration(color:const Color(0xFF101820),borderRadius:BorderRadius.circular(18),border:Border.all(color:Colors.white12)),child:w);
+ Widget _line(String a,String b)=>Padding(padding:const EdgeInsets.symmetric(vertical:4),child:Row(children:[Text(a,style:const TextStyle(color:Colors.white54)),const Spacer(),Flexible(child:Text(b,textAlign:TextAlign.end))]));
+}
+class Link{final String url,mime,name;final int length;final Kind kind;Link(this.url,this.mime,this.name,this.length,this.kind);}
+
+class Library extends StatefulWidget{const Library({super.key});@override State<Library> createState()=>_LibraryState();}
+class _LibraryState extends State<Library>{
+ final player=AudioPlayer();List<File> files=[];int tab=0;String? playing;
+ @override void initState(){super.initState();load();}
+ @override void dispose(){player.dispose();super.dispose();}
+ Future<void> load()async{final d=Directory('${(await getApplicationDocumentsDirectory()).path}/JESI_Downloads');if(await d.exists())files=d.listSync().whereType<File>().toList()..sort((a,b)=>b.lastModifiedSync().compareTo(a.lastModifiedSync()));if(mounted)setState((){});}
+ Kind kind(File f)=>detect('',f.path);
+ List<File> get shown=>files.where((f){final k=kind(f);return tab==0||(tab==1&&k==Kind.video)||(tab==2&&k==Kind.audio)||(tab==3&&k==Kind.image);}).toList();
+ Future<void> play(File f)async{try{if(playing==f.path&&player.playing){await player.pause();}else{await player.setFilePath(f.path);playing=f.path;await player.play();}setState((){});}catch(e){ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('تعذر تشغيل الصوت: $e')));}}
+ @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:const Text('التنزيلات')),body:Column(children:[
+  Padding(padding:const EdgeInsets.all(10),child:Wrap(spacing:6,children:List.generate(4,(i)=>ChoiceChip(label:Text(['الكل','الفيديوهات','الأغاني','الصور'][i]),selected:tab==i,onSelected:(_)=>setState(()=>tab=i),selectedColor:neon.withOpacity(.2))))),
+  Expanded(child:shown.isEmpty?const Center(child:Text('لا توجد ملفات محفوظة في هذا القسم.')):RefreshIndicator(onRefresh:load,child:ListView.builder(itemCount:shown.length,itemBuilder:(_,i){
+   final f=shown[i],k=kind(shown[i]);final icon=k==Kind.audio?Icons.music_note:k==Kind.video?Icons.movie:Icons.image;
+   return Card(color:const Color(0xFF101820),child:ListTile(leading:k==Kind.image?ClipRRect(borderRadius:BorderRadius.circular(8),child:Image.file(f,width:52,height:52,fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Icon(Icons.image,color:neon))):CircleAvatar(child:Icon(icon,color:neon)),
+    title:Text(f.uri.pathSegments.last,maxLines:1,overflow:TextOverflow.ellipsis),subtitle:Text(sizeText(f.lengthSync())),
+    trailing:k==Kind.audio?IconButton(onPressed:()=>play(f),icon:Icon(playing==f.path&&player.playing?Icons.pause_circle:Icons.play_circle,color:neon,size:30)):const Icon(Icons.check_circle,color:neon),
+    onTap:k==Kind.audio?()=>play(f):k==Kind.image?()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>ImageView(file:f))):k==Kind.video?()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>VideoView(file:f))):null));
+  }))),
+  if(playing!=null)Padding(padding:const EdgeInsets.all(10),child:Row(children:[const Icon(Icons.graphic_eq,color:neon),Expanded(child:Text(playing!.split('/').last,maxLines:1,overflow:TextOverflow.ellipsis)),IconButton(onPressed:()=>player.playing?player.pause():player.play(),icon:Icon(player.playing?Icons.pause:Icons.play_arrow,color:neon))]))
+ ]));
 }
 
-enum MediaKind { video, image, audio, other, page }
 
-class LinkInfo {
-  final String url, type, name;
-  final int? length;
-  final MediaKind kind;
-  const LinkInfo(this.url, this.type, this.name, this.length, this.kind);
-  String get label => switch (kind) {
-    MediaKind.video => 'فيديو',
-    MediaKind.image => 'صورة',
-    MediaKind.audio => 'ملف صوتي',
-    MediaKind.page => 'صفحة / رابط منصة',
-    MediaKind.other => 'ملف آخر',
-  };
+class Assistant extends StatefulWidget {
+ final FlutterSecureStorage secure;
+ const Assistant({super.key,required this.secure});
+ @override State<Assistant> createState()=>_AssistantState();
+}
+class _AssistantState extends State<Assistant> {
+ final url=TextEditingController(),question=TextEditingController();
+ String answer='';bool busy=false;
+ Future<void> ask() async {
+  if(url.text.trim().isEmpty||question.text.trim().isEmpty)return;
+  setState(()=>{busy=true,answer=''});
+  try{
+   final p=await SharedPreferences.getInstance();
+   final key=(await widget.secure.read(key:'api_key')??'').trim();
+   final endpoint=(p.getString('endpoint')??'https://api.openai.com/v1/chat/completions').trim();
+   final model=(p.getString('model')??'gpt-4o-mini').trim();
+   if(key.isEmpty)throw Exception('أضف مفتاح OpenAI من الإعدادات أولاً.');
+   final r=await Dio().post(endpoint,
+    options:Options(headers:{'Authorization':'Bearer $key','Content-Type':'application/json'},validateStatus:(v)=>v!=null&&v<500),
+    data:{'model':model,'messages':[
+     {'role':'system','content':'أنت مساعد لتحليل روابط الوسائط. لا تدّعِ استخراج ملف لم يتم التحقق منه.'},
+     {'role':'user','content':'الرابط: ${url.text}\\nالسؤال: ${question.text}'}
+    ]});
+   if(r.statusCode==401)throw Exception('OpenAI رفض المفتاح (401). تحقق من صحته وأنه غير ملغى.');
+   if(r.statusCode==403)throw Exception('لا توجد صلاحية كافية للمفتاح أو المشروع (403).');
+   if(r.statusCode==404)throw Exception('النموذج أو عنوان API غير موجود (404).');
+   if(r.statusCode==429)throw Exception('تم بلوغ حد الاستخدام أو الرصيد (429).');
+   if((r.statusCode??500)>=400)throw Exception('HTTP ${r.statusCode}: ${r.data}');
+   answer=r.data['choices']?[0]?['message']?['content']?.toString()??'لم يصل رد مفهوم.';
+  }catch(e){answer='تعذر إكمال الطلب: $e';}
+  finally{if(mounted)setState(()=>busy=false);}
+ }
+ @override void dispose(){url.dispose();question.dispose();super.dispose();}
+ @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:const Text('مساعد OpenAI')),body:ListView(padding:const EdgeInsets.all(18),children:[
+  TextField(controller:url,decoration:const InputDecoration(labelText:'الرابط')),
+  const SizedBox(height:12),TextField(controller:question,maxLines:3,decoration:const InputDecoration(labelText:'ما الذي تريد تحليله؟')),
+  const SizedBox(height:12),FilledButton.icon(onPressed:busy?null:ask,icon:const Icon(Icons.auto_awesome),label:Text(busy?'جارٍ التحليل…':'اسأل OpenAI')),
+  if(busy)const Padding(padding:EdgeInsets.all(12),child:LinearProgressIndicator()),
+  if(answer.isNotEmpty)Container(margin:const EdgeInsets.only(top:16),padding:const EdgeInsets.all(16),decoration:BoxDecoration(color:const Color(0xFF101820),borderRadius:BorderRadius.circular(16)),child:SelectableText(answer))
+ ]));
 }
 
-MediaKind kindFrom(String? mime, String url) {
-  final m = (mime ?? '').toLowerCase();
-  if (m.startsWith('video/')) return MediaKind.video;
-  if (m.startsWith('image/')) return MediaKind.image;
-  if (m.startsWith('audio/')) return MediaKind.audio;
-  if (m.contains('html')) return MediaKind.page;
-  final p = Uri.tryParse(url)?.path.toLowerCase() ?? '';
-  if (['.mp4','.mov','.m4v','.webm'].any(p.endsWith)) return MediaKind.video;
-  if (['.jpg','.jpeg','.png','.webp','.gif'].any(p.endsWith)) return MediaKind.image;
-  if (['.mp3','.m4a','.aac','.wav','.ogg'].any(p.endsWith)) return MediaKind.audio;
-  return MediaKind.other;
+
+class ImageView extends StatelessWidget {
+ final File file; const ImageView({super.key,required this.file});
+ @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:Text(file.uri.pathSegments.last)),body:Center(child:InteractiveViewer(child:Image.file(file,fit:BoxFit.contain))));
+}
+class VideoView extends StatefulWidget {
+ final File file; const VideoView({super.key,required this.file});
+ @override State<VideoView> createState()=>_VideoViewState();
+}
+class _VideoViewState extends State<VideoView> {
+ late final VideoPlayerController controller;
+ @override void initState(){super.initState();controller=VideoPlayerController.file(widget.file)..initialize().then((_){if(mounted)setState((){});});}
+ @override void dispose(){controller.dispose();super.dispose();}
+ @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:Text(widget.file.uri.pathSegments.last)),body:Center(child:controller.value.isInitialized?AspectRatio(aspectRatio:controller.value.aspectRatio,child:Stack(alignment:Alignment.bottomCenter,children:[
+  VideoPlayer(controller),VideoProgressIndicator(controller,allowScrubbing:true,padding:const EdgeInsets.all(12)),
+  Align(alignment:Alignment.center,child:IconButton(iconSize:64,color:Colors.white,onPressed:(){if(controller.value.isPlaying){controller.pause();}else{controller.play();}setState((){});},icon:Icon(controller.value.isPlaying?Icons.pause_circle:Icons.play_circle)))
+ ])):const CircularProgressIndicator()));
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
-  final urlCtrl = TextEditingController();
-  final dio = Dio(BaseOptions(connectTimeout: const Duration(seconds: 20), receiveTimeout: const Duration(minutes: 5), followRedirects: true, maxRedirects: 8));
-  final secure = const FlutterSecureStorage();
-  LinkInfo? info;
-  bool inspecting = false, downloading = false, online = true;
-  double progress = 0;
-  String status = 'ضع رابطاً للفحص', speed = '—', error = '';
-  StreamSubscription<List<ConnectivityResult>>? netSub;
-  Timer? retryTimer;
-  CancelToken? cancel;
-  late final AnimationController pulse;
-
-  @override
-  void initState() {
-    super.initState();
-    pulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
-    netSub = Connectivity().onConnectivityChanged.listen((r) {
-      final now = !r.contains(ConnectivityResult.none);
-      if (mounted) setState(() => online = now);
-      if (now && downloading) _retryIfNeeded();
-    });
-  }
-
-  @override
-  void dispose() {
-    retryTimer?.cancel(); netSub?.cancel(); pulse.dispose();
-    urlCtrl.dispose();
-    super.dispose();
-  }
-
-  String _cleanUrl(String raw) {
-    final s = raw.trim();
-    final u = Uri.tryParse(s.contains('://') ? s : 'https://$s');
-    if (u == null || !u.hasAuthority || !['http','https'].contains(u.scheme)) {
-      throw const FormatException('الرابط غير صالح. استخدم رابط HTTP أو HTTPS.');
-    }
-    return u.toString();
-  }
-
-  Future<void> inspect([String? raw]) async {
-    final input = raw ?? urlCtrl.text;
-    if (input.trim().isEmpty) return;
-    setState(() { inspecting = true; error = ''; status = 'جارٍ فحص الرابط…'; info = null; });
-    try {
-      final url = _cleanUrl(input);
-      Response<dynamic> res;
-      try {
-        res = await dio.head(url, options: Options(responseType: ResponseType.plain, validateStatus: (s) => s != null && s < 500));
-      } catch (_) {
-        res = await dio.get(url, options: Options(
-          responseType: ResponseType.stream,
-          headers: {'Range': 'bytes=0-0'},
-          validateStatus: (s) => s != null && s < 500,
-        ));
-      }
-      final headers = res.headers;
-      final mime = headers.value(Headers.contentTypeHeader)?.split(';').first;
-      final lengthText = headers.value(Headers.contentLengthHeader);
-      final length = int.tryParse(lengthText ?? '');
-      final kind = kindFrom(mime, url);
-      final disposition = headers.value('content-disposition') ?? '';
-      final nameMatch = RegExp(r'filename="?([^";]+)').firstMatch(disposition);
-      final fallback = Uri.parse(url).pathSegments.isNotEmpty ? Uri.parse(url).pathSegments.last : 'download';
-      final filename = nameMatch?.group(1) ?? (fallback.isEmpty ? 'download' : fallback);
-      info = LinkInfo(url, mime ?? 'غير معروف', filename, length, kind);
-      status = kind == MediaKind.page
-        ? 'تم الوصول إلى صفحة ويب؛ لا يوجد ملف مباشر مؤكد.'
-        : (kind == MediaKind.other ? 'تم الفحص؛ نوع الملف غير محسوم.' : 'تم التعرف على ${info!.label}.');
-    } catch (e) {
-      error = e.toString(); status = 'تعذر فحص الرابط';
-    } finally {
-      if (mounted) setState(() => inspecting = false);
-    }
-  }
-
-  Future<void> pasteAndInspect() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text?.trim() ?? '';
-    if (text.isEmpty) { _toast('الحافظة فارغة'); return; }
-    urlCtrl.text = text;
-    await inspect(text);
-  }
-
-  Future<Directory> _targetDir(MediaKind kind) async {
-    if (kind == MediaKind.video || kind == MediaKind.image) {
-      final dir = await getTemporaryDirectory();
-      return Directory('${dir.path}/jesi_media')..createSync(recursive: true);
-    }
-    final base = await getExternalStorageDirectory();
-    final dir = Directory('${base?.path ?? (await getApplicationDocumentsDirectory()).path}/JESI');
-    await dir.create(recursive: true);
-    return dir;
-  }
-
-  Future<void> download() async {
-    final item = info;
-    if (item == null) return;
-    if (item.kind == MediaKind.page || item.kind == MediaKind.other) {
-      _toast('هذا الرابط ليس ملف وسائط مباشراً قابلاً للتنزيل.');
-      return;
-    }
-    if (downloading) return;
-    if (Platform.isAndroid) {
-      await Permission.notification.request();
-      if (item.kind == MediaKind.image || item.kind == MediaKind.video) {
-        await Permission.photos.request();
-        await Permission.videos.request();
-      }
-    }
-    setState(() { downloading = true; progress = 0; status = 'جارٍ التحميل…'; error = ''; });
-    await _performDownload(item);
-  }
-
-  Future<void> _performDownload(LinkInfo item) async {
-    final token = CancelToken(); cancel = token;
-    try {
-      final dir = await _targetDir(item.kind);
-      var filename = item.name.replaceAll(RegExp(r'[\\\\/:*?"<>|]'), '_');
-      if (!filename.contains('.')) {
-        filename += item.kind == MediaKind.video ? '.mp4' : item.kind == MediaKind.image ? '.jpg' : '.mp3';
-      }
-      final path = '${dir.path}/$filename';
-      final sw = Stopwatch()..start();
-      var lastBytes = 0, lastTime = 0;
-      await dio.download(item.url, path, cancelToken: token,
-        options: Options(followRedirects: true, receiveTimeout: const Duration(minutes: 10)),
-        onReceiveProgress: (received, total) async {
-          if (!mounted) return;
-          final now = sw.elapsedMilliseconds;
-          final delta = received - lastBytes;
-          final dt = max(1, now - lastTime);
-          if (dt >= 500) { speed = '${(delta * 1000 / dt / 1024).toStringAsFixed(1)} KB/s'; lastBytes = received; lastTime = now; }
-          setState(() { if (total > 0) progress = received / total; });
-          await Notice.show('JESI Downloader', 'تحميل ${(progress * 100).toStringAsFixed(0)}%', id: 7);
-        });
-      if (item.kind == MediaKind.video || item.kind == MediaKind.image) {
-        if (item.kind == MediaKind.video) { await Gal.putVideo(path); } else { await Gal.putImage(path); }
-      }
-      setState(() { downloading = false; progress = 1; status = 'اكتمل التحميل'; speed = 'مكتمل'; });
-      await Notice.done('اكتمل التحميل', filename, id: 7);
-      _toast('اكتمل: $filename');
-    } on DioException catch (e) {
-      if (CancelToken.isCancel(e)) {
-        setState(() { downloading = false; status = 'تم إيقاف التحميل'; });
-      } else {
-        setState(() { status = online ? 'انقطع التحميل؛ ستتم إعادة المحاولة' : 'بانتظار عودة الإنترنت…'; error = e.message ?? 'Network error'; });
-        await Notice.done('JESI: إعادة المحاولة', status, id: 7);
-        _retryIfNeeded();
-      }
-    } catch (e) {
-      setState(() { downloading = false; status = 'تعذر حفظ الملف'; error = e.toString(); });
-      await Notice.done('JESI: فشل التحميل', 'تحقق من صلاحيات التخزين والرابط', id: 7);
-    }
-  }
-
-  void _retryIfNeeded() {
-    retryTimer?.cancel();
-    if (!downloading) return;
-    retryTimer = Timer(const Duration(seconds: 5), () async {
-      if (!mounted || !downloading || info == null) return;
-      if (!online) { _retryIfNeeded(); return; }
-      await _performDownload(info!);
-    });
-  }
-
-  Future<void> stopDownload() async {
-    cancel?.cancel('Stopped by user');
-    retryTimer?.cancel();
-    if (mounted) setState(() => downloading = false);
-    await Notice.done('JESI Downloader', 'تم إيقاف التحميل', id: 7);
-  }
-
-  void _toast(String msg) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-
-  Future<void> openSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsPage(prefs: prefs, secure: secure)));
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Row(children: [Icon(Icons.downloading_rounded, color: neon), SizedBox(width: 8), Text('JESI', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 2))]),
-      actions: [IconButton(onPressed: openSettings, icon: const Icon(Icons.tune_rounded)), const SizedBox(width: 8)],
-    ),
-    body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
-      const SizedBox(height: 10),
-      AnimatedBuilder(animation: pulse, builder: (_, __) => Center(
-        child: Container(width: 154, height: 154,
-          decoration: BoxDecoration(shape: BoxShape.circle,
-            boxShadow: [BoxShadow(color: neon.withOpacity(.12 + pulse.value * .18), blurRadius: 32, spreadRadius: 8)],
-            border: Border.all(color: neon.withOpacity(.5 + pulse.value * .4), width: 1.5),
-            gradient: const RadialGradient(colors: [Color(0xFF183A3B), Color(0xFF0B141C)])),
-          child: const Icon(Icons.download_rounded, size: 72, color: neon)),
-      )),
-      const SizedBox(height: 20),
-      const Center(child: Text('حمّل بذكاء مع الجيسي', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold))),
-      const SizedBox(height: 6),
-      Center(child: Text('فحص الروابط والملفات المباشرة', style: TextStyle(color: Colors.white.withOpacity(.55)))),
-      const SizedBox(height: 24),
-      TextField(controller: urlCtrl, keyboardType: TextInputType.url, decoration: InputDecoration(
-        hintText: 'ألصق رابط الفيديو أو الصورة هنا',
-        prefixIcon: const Icon(Icons.link, color: neon),
-        suffixIcon: IconButton(icon: const Icon(Icons.content_paste, color: neon), onPressed: pasteAndInspect))),
-      const SizedBox(height: 12),
-      Row(children: [
-        Expanded(child: FilledButton.icon(onPressed: inspecting ? null : () => inspect(), icon: inspecting ? const SizedBox(width: 18,height:18,child:CircularProgressIndicator(strokeWidth:2)) : const Icon(Icons.search), label: const Text('افحص الرابط'))),
-        const SizedBox(width: 10),
-        IconButton.filledTonal(onPressed: pasteAndInspect, icon: const Icon(Icons.my_location), tooltip: 'فحص آخر رابط منسوخ'),
-      ]),
-      const SizedBox(height: 16),
-      _panel(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [const Icon(Icons.radar, color: neon), const SizedBox(width: 8), const Text('نتيجة الفحص', style: TextStyle(fontWeight: FontWeight.bold)), const Spacer(), _pill(online ? 'متصل' : 'غير متصل', online ? neon : Colors.orange)]),
-        const SizedBox(height: 12),
-        Text(status, style: const TextStyle(fontSize: 15)),
-        if (info != null) ...[
-          const Divider(height: 22),
-          _detail('النوع', info!.label),
-          _detail('MIME', info!.type),
-          _detail('الاسم', info!.name),
-          _detail('الحجم', info!.length == null ? 'غير معروف' : '${(info!.length! / 1024 / 1024).toStringAsFixed(2)} MB'),
-          if (info!.kind == MediaKind.page) const Text('هذا رابط صفحة وليس رابط ملف مباشر.'),
-        ],
-        if (error.isNotEmpty) Text(error, style: const TextStyle(color: Colors.orangeAccent, fontSize: 12)),
-      ])),
-      const SizedBox(height: 14),
-      if (info != null && [MediaKind.video, MediaKind.image, MediaKind.audio].contains(info!.kind))
-        FilledButton.icon(onPressed: downloading ? null : download, icon: const Icon(Icons.download), label: const Text('تنزيل الملف')),
-      if (downloading) ...[
-        const SizedBox(height: 12),
-        _panel(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [const Text('تقدم التحميل', style: TextStyle(fontWeight: FontWeight.bold)), const Spacer(), Text('${(progress*100).toStringAsFixed(0)}%')]),
-          const SizedBox(height: 10),
-          LinearProgressIndicator(value: progress == 0 ? null : progress, minHeight: 7, borderRadius: BorderRadius.circular(9), color: neon, backgroundColor: Colors.white12),
-          const SizedBox(height: 8),
-          Row(children: [Text('السرعة: $speed', style: const TextStyle(color: neon)), const Spacer(), Text(online ? 'الاتصال متاح' : 'بانتظار الشبكة', style: const TextStyle(color: Colors.orange))]),
-          Align(alignment: Alignment.centerRight, child: TextButton.icon(onPressed: stopDownload, icon: const Icon(Icons.stop), label: const Text('إيقاف'))),
-        ])),
-      ],
-      const SizedBox(height: 14),
-      _panel(child: Row(children: [
-        const Icon(Icons.auto_awesome, color: neon), const SizedBox(width: 10),
-        const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('مساعد تحليل الروابط', style: TextStyle(fontWeight: FontWeight.bold)), Text('اسأل النموذج عن الرابط بعد ضبط API', style: TextStyle(fontSize: 12, color: Colors.white54))])),
-        TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => AssistantPage(secure: secure))), child: const Text('فتح')),
-      ])),
-      const SizedBox(height: 22),
-      const Center(child: Text('JESI DOWNLOADER • NO ADS', style: TextStyle(color: Colors.white30, fontSize: 10, letterSpacing: 1.5))),
-    ])),
-  );
-
-  Widget _panel({required Widget child}) => Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF101820), borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.white.withOpacity(.07))), child: child);
-  Widget _pill(String t, Color c) => Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5), decoration: BoxDecoration(color: c.withOpacity(.12), borderRadius: BorderRadius.circular(20)), child: Text(t, style: TextStyle(color: c, fontSize: 11)));
-  Widget _detail(String a, String b) => Padding(padding: const EdgeInsets.symmetric(vertical: 3), child: Row(children: [Text(a, style: const TextStyle(color: Colors.white54)), const Spacer(), Flexible(child: Text(b, textAlign: TextAlign.end))]));
-}
-
-class SettingsPage extends StatefulWidget {
-  final SharedPreferences prefs;
-  final FlutterSecureStorage secure;
-  const SettingsPage({super.key, required this.prefs, required this.secure});
-  @override
-  State<SettingsPage> createState() => _SettingsPageState();
-}
-class _SettingsPageState extends State<SettingsPage> {
-  final model = TextEditingController(), endpoint = TextEditingController(), keyCtrl = TextEditingController();
-  bool saved = false, showKey = false;
-  @override
-  void initState() { super.initState(); model.text = widget.prefs.getString('model') ?? 'gpt-4o-mini'; endpoint.text = widget.prefs.getString('endpoint') ?? 'https://api.openai.com/v1/chat/completions'; widget.secure.read(key: 'api_key').then((v) { if (mounted) keyCtrl.text = v ?? ''; }); }
-  @override
-  void dispose() { model.dispose(); endpoint.dispose(); keyCtrl.dispose(); super.dispose(); }
-  Future<void> save() async {
-    await widget.prefs.setString('model', model.text.trim());
-    await widget.prefs.setString('endpoint', endpoint.text.trim());
-    await widget.secure.write(key: 'api_key', value: keyCtrl.text.trim());
-    if (mounted) setState(() => saved = true);
-  }
-  @override
-  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('الإعدادات والنموذج')), body: ListView(padding: const EdgeInsets.all(18), children: [
-    const Text('إعدادات المساعد الذكي', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-    const SizedBox(height: 16),
-    TextField(controller: model, decoration: const InputDecoration(labelText: 'اسم النموذج')),
-    const SizedBox(height: 12),
-    TextField(controller: endpoint, keyboardType: TextInputType.url, decoration: const InputDecoration(labelText: 'رابط API endpoint')),
-    const SizedBox(height: 12),
-    TextField(controller: keyCtrl, obscureText: !showKey, decoration: InputDecoration(labelText: 'مفتاح API', suffixIcon: IconButton(onPressed: () => setState(() => showKey = !showKey), icon: Icon(showKey ? Icons.visibility_off : Icons.visibility)))),
-    const SizedBox(height: 16),
-    FilledButton.icon(onPressed: save, icon: const Icon(Icons.save), label: const Text('حفظ الإعدادات')),
-    if (saved) const Padding(padding: EdgeInsets.only(top: 10), child: Text('تم حفظ الإعدادات على الجهاز.', style: TextStyle(color: neon))),
-    const SizedBox(height: 18),
-    const Text('المفتاح محفوظ محلياً بتخزين آمن على Android. استخدم مزود API موثوقاً؛ لا تشارك المفتاح مع أحد.', style: TextStyle(color: Colors.white54)),
-  ]));
-}
-
-class AssistantPage extends StatefulWidget {
-  final FlutterSecureStorage secure;
-  const AssistantPage({super.key, required this.secure});
-  @override
-  State<AssistantPage> createState() => _AssistantPageState();
-}
-class _AssistantPageState extends State<AssistantPage> {
-  final url = TextEditingController(), question = TextEditingController();
-  String answer = '';
-  bool busy = false;
-  Future<void> ask() async {
-    if (url.text.trim().isEmpty || question.text.trim().isEmpty) return;
-    setState(() { busy = true; answer = ''; });
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final key = await widget.secure.read(key: 'api_key') ?? '';
-      final endpoint = prefs.getString('endpoint') ?? '';
-      final model = prefs.getString('model') ?? 'gpt-4o-mini';
-      if (key.isEmpty || endpoint.isEmpty) throw Exception('أدخل endpoint ومفتاح API من الإعدادات أولاً.');
-      final response = await Dio().post(endpoint,
-        options: Options(headers: {'Authorization': 'Bearer $key', 'Content-Type': 'application/json'}),
-        data: {'model': model, 'messages': [
-          {'role': 'system', 'content': 'حلل الروابط بحذر. لا تدّعِ أن الرابط آمن بشكل مؤكد. وضح مؤشرات الخطر وحدود الفحص، ولا تفتح الرابط أو تنفذ محتواه.'},
-          {'role': 'user', 'content': 'الرابط: ${url.text}\nالسؤال: ${question.text}\nأعطني تقييماً أولياً وتفاصيل يمكن استنتاجها دون فتح محتوى ضار.'}
-        ]});
-      answer = response.data['choices']?[0]?['message']?['content']?.toString() ?? 'لم يصل رد مفهوم من النموذج.';
-    } catch (e) { answer = 'تعذر إكمال الطلب: $e'; }
-    finally { if (mounted) setState(() => busy = false); }
-  }
-  @override
-  void dispose() { url.dispose(); question.dispose(); super.dispose(); }
-  @override
-  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('مساعد الجيسي')), body: ListView(padding: const EdgeInsets.all(18), children: [
-    TextField(controller: url, decoration: const InputDecoration(labelText: 'الرابط المراد تحليله', prefixIcon: Icon(Icons.link))),
-    const SizedBox(height: 12),
-    TextField(controller: question, maxLines: 3, decoration: const InputDecoration(labelText: 'ماذا تريد أن تعرف عن الرابط؟')),
-    const SizedBox(height: 12),
-    FilledButton.icon(onPressed: busy ? null : ask, icon: const Icon(Icons.auto_awesome), label: Text(busy ? 'جارٍ التحليل…' : 'اسأل النموذج')),
-    if (busy) const Padding(padding: EdgeInsets.all(16), child: LinearProgressIndicator()),
-    if (answer.isNotEmpty) Container(margin: const EdgeInsets.only(top: 18), padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF101820), borderRadius: BorderRadius.circular(18)), child: SelectableText(answer)),
-  ]));
+class Settings extends StatefulWidget{final FlutterSecureStorage secure;const Settings({super.key,required this.secure});@override State<Settings> createState()=>_SettingsState();}
+class _SettingsState extends State<Settings>{
+ final model=TextEditingController(text:'gpt-4o-mini'),endpoint=TextEditingController(text:'https://api.openai.com/v1/chat/completions'),key=TextEditingController();bool show=false;
+ @override void initState(){super.initState();SharedPreferences.getInstance().then((p){model.text=p.getString('model')??model.text;endpoint.text=p.getString('endpoint')??endpoint.text;});widget.secure.read(key:'api_key').then((v){if(mounted)key.text=v??'';});}
+ @override void dispose(){model.dispose();endpoint.dispose();key.dispose();super.dispose();}
+ Future<void> save()async{final p=await SharedPreferences.getInstance();await p.setString('model',model.text.trim());await p.setString('endpoint',endpoint.text.trim());await widget.secure.write(key:'api_key',value:key.text.trim());if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('تم حفظ إعدادات OpenAI')));}
+ @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(title:const Text('إعدادات OpenAI')),body:ListView(padding:const EdgeInsets.all(18),children:[
+  TextField(controller:model,decoration:const InputDecoration(labelText:'اسم النموذج')),
+  const SizedBox(height:12),TextField(controller:endpoint,decoration:const InputDecoration(labelText:'API endpoint')),
+  const SizedBox(height:12),TextField(controller:key,obscureText:!show,decoration:InputDecoration(labelText:'مفتاح OpenAI API',suffixIcon:IconButton(onPressed:()=>setState(()=>show=!show),icon:Icon(show?Icons.visibility_off:Icons.visibility)))),
+  const SizedBox(height:16),FilledButton(onPressed:save,child:const Text('حفظ')),
+  const SizedBox(height:12),const Text('استخدم مفتاحاً صالحاً ونموذجاً متاحاً. خطأ 401 يعني أن OpenAI رفض بيانات المصادقة.',style:TextStyle(color:Colors.white60))
+ ]));
 }
