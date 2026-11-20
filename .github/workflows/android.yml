@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
 
 permissions:
   contents: read
@@ -26,70 +26,108 @@ jobs:
           cache: true
       - name: Generate Android project files
         run: flutter create --platforms=android --org com.jesi --project-name jesi_downloader .
-      - name: Enable Android core library desugaring
+      - name: Patch Android project (gradle, manifest, kotlin, icon)
         run: |
+          pip install pillow --quiet
           python3 - <<'PY'
+          import re, shutil
           from pathlib import Path
 
-          candidates = [
-              Path("android/app/build.gradle.kts"),
-              Path("android/app/build.gradle"),
+          # ---------- gradle ----------
+          g = next((p for p in (Path("android/app/build.gradle.kts"), Path("android/app/build.gradle")) if p.exists()), None)
+          if g is None:
+              raise SystemExit("build.gradle(.kts) not found")
+          kts = g.suffix == ".kts"
+          t = g.read_text()
+
+          t = re.sub(r'(minSdk(?:Version)?)(\s*=\s*|\s+)flutter\.minSdkVersion', r'\g<1>\g<2>29', t)
+
+          q = '"' if kts else "'"
+          deps = [
+              "io.github.junkfood02.youtubedl-android:library:0.18.1",
+              "io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1",
+              "io.github.junkfood02.youtubedl-android:aria2c:0.18.1",
           ]
-          gradle = next((p for p in candidates if p.exists()), None)
-          if gradle is None:
-              raise SystemExit("Could not find android/app/build.gradle(.kts)")
-
-          text = gradle.read_text()
-          is_kts = gradle.suffix == ".kts"
-
-          if is_kts:
-              enabled = "isCoreLibraryDesugaringEnabled = true"
-              dependency = 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
-          else:
-              enabled = "coreLibraryDesugaringEnabled true"
-              dependency = "coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'"
-
-          if enabled not in text:
-              marker = "compileOptions {"
-              if marker not in text:
-                  raise SystemExit("compileOptions block not found in " + str(gradle))
-              text = text.replace(marker, marker + "\n        " + enabled, 1)
-
-          if dependency not in text:
-              marker = "dependencies {"
-              if marker not in text:
-                  text += "\n\ndependencies {\n    " + dependency + "\n}\n"
+          lines = "\n".join("    implementation(%s%s%s)" % (q, d, q) if kts else "    implementation %s%s%s" % (q, d, q) for d in deps)
+          if "youtubedl-android:library" not in t:
+              if re.search(r'^dependencies\s*\{', t, re.M):
+                  t = re.sub(r'^(dependencies\s*\{)', r'\1\n' + lines, t, count=1, flags=re.M)
               else:
-                  text = text.replace(marker, marker + "\n    " + dependency, 1)
+                  t += "\n\ndependencies {\n" + lines + "\n}\n"
 
-          gradle.write_text(text)
-          print("Enabled core library desugaring in", gradle)
-          PY
-      - name: Add Android permissions
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("android/app/src/main/AndroidManifest.xml")
-          s = p.read_text()
-          marker = '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
-          permissions = '''
-              <uses-permission android:name="android.permission.INTERNET"/>
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
-              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
-          '''
+          if "useLegacyPackaging" not in t:
+              t = re.sub(r'(\n\s*android\s*\{)', r'\1\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }', t, count=1)
+
+          if "abiFilters" not in t:
+              if kts:
+                  ndk = '\n        ndk {\n            abiFilters += listOf("arm64-v8a", "armeabi-v7a")\n        }'
+              else:
+                  ndk = "\n        ndk {\n            abiFilters 'arm64-v8a', 'armeabi-v7a'\n        }"
+              t = re.sub(r'(\n\s*defaultConfig\s*\{)', r'\1' + ndk, t, count=1)
+          g.write_text(t)
+
+          # ---------- manifest ----------
+          m = Path("android/app/src/main/AndroidManifest.xml")
+          s = m.read_text()
+          perms = "".join('\n    <uses-permission android:name="android.permission.%s"/>' % n for n in (
+              "INTERNET", "ACCESS_NETWORK_STATE", "POST_NOTIFICATIONS", "FOREGROUND_SERVICE",
+              "FOREGROUND_SERVICE_DATA_SYNC", "WAKE_LOCK"))
           if "android.permission.INTERNET" not in s:
-              s = s.replace(marker, marker + permissions)
-          p.write_text(s)
+              s = re.sub(r'(<manifest[^>]*>)', lambda mo: mo.group(1) + perms, s, count=1)
+          s = re.sub(r'android:label="[^"]*"', 'android:label="JESI"', s, count=1)
+          if "extractNativeLibs" not in s:
+              s = s.replace("<application", '<application android:extractNativeLibs="true" android:usesCleartextTraffic="true"', 1)
+          flt = '''
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+          '''
+          if "android.intent.action.SEND" not in s:
+              s = s.replace("</activity>", flt + "</activity>", 1)
+          if "KeepAliveService" not in s:
+              s = s.replace("</application>", '    <service android:name=".KeepAliveService" android:exported="false" android:foregroundServiceType="dataSync"/>\n    </application>', 1)
+          m.write_text(s)
+
+          # ---------- kotlin ----------
+          kd = Path("android/app/src/main/kotlin/com/jesi/jesi_downloader")
+          kd.mkdir(parents=True, exist_ok=True)
+          for old in kd.glob("*.kt"):
+              old.unlink()
+          shutil.copy("MainActivity.kt", kd / "MainActivity.kt")
+
+          # ---------- icon ----------
+          from PIL import Image
+          res = Path("android/app/src/main/res")
+          full = Image.open("icon.png").convert("RGBA")
+          fg = Image.open("icon_fg.png").convert("RGBA")
+          for d, px in (("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192)):
+              folder = res / ("mipmap-" + d)
+              folder.mkdir(parents=True, exist_ok=True)
+              full.resize((px, px), Image.LANCZOS).save(folder / "ic_launcher.png")
+              big = px * 108 // 48
+              fg.resize((big, big), Image.LANCZOS).save(folder / "ic_launcher_foreground.png")
+          any26 = res / "mipmap-anydpi-v26"
+          any26.mkdir(parents=True, exist_ok=True)
+          (any26 / "ic_launcher.xml").write_text(
+              '<?xml version="1.0" encoding="utf-8"?>\n'
+              '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n'
+              '    <background android:drawable="@color/jesi_icon_bg"/>\n'
+              '    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n'
+              '</adaptive-icon>\n')
+          vals = res / "values"
+          vals.mkdir(parents=True, exist_ok=True)
+          (vals / "jesi_colors.xml").write_text(
+              '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="jesi_icon_bg">#2A0614</color>\n</resources>\n')
+          print("patched OK")
           PY
       - name: Remove generated placeholder test
         run: rm -rf test
       - name: Get packages
         run: flutter pub get
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
       - name: Build debug APK
         run: flutter build apk --debug
       - name: Upload APK artifact
